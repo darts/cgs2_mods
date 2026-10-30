@@ -116,7 +116,6 @@ app-patch*.json
 validation*.json
 *verified*.json
 *.tsv
-*.png
 *.jpg
 *.jpeg
 *.pdf

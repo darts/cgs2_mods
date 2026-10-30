@@ -112,8 +112,8 @@ This option changes only the two instructions that select that filler.
 The electrical function of `TP4100` is unknown.
 Do not assume that another board has the same connection.
 
-![PCB back side - TP4100 circled](image.png)
-![PCB front side](image-1.png)
+![PCB back side - TP4100 circled](../media/pcb-back-tp4100-highlight.png)
+![PCB front side](../media/pcb-front.png)
 
 ### Copy the flash memory
 

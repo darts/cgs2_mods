@@ -26,6 +26,10 @@ Other firmware is not officially supported.
 The monitor procedures have been tested on macOS.
 The host checks cover macOS, Linux and Windows, with platform limits listed in [Development](docs/development.md).
 
+## The new look
+
+![New screensaver](./media/screensaver.png)
+
 ## Quick start
 
 1. Install [mise](https://mise.jdx.dev/installing-mise.html).
