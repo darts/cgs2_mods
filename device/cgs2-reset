@@ -1,0 +1,10 @@
+#!/bin/sh
+# One fixed command from the Reset page. The worker is made from verified stock.
+set -eu
+umask 077
+case "${1:-start}" in start|check|run) ;; *) exit 2 ;; esac
+if [ ! -f /data/cgs2-stock/restore.sh ] || [ -L /data/cgs2-stock/restore.sh ]; then
+    printf '%s\n' '{"ok":false,"message":"The stock copy is missing. Use a verified computer backup."}' > /tmp/cgs2-reset-status.json
+    exit 1
+fi
+exec sh /data/cgs2-stock/restore.sh "${1:-start}"

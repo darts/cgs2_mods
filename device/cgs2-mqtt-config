@@ -1,0 +1,142 @@
+#!/bin/sh
+# No secrets in argv or logs. UI writes a private QSettings file, then calls this
+# fixed command. Only an explicitly saved broker becomes an egress exception.
+set -eu
+umask 077
+BASE=/usr/local/share/cgs2-privacy
+SERVICES=/usr/local/sbin/cgs2-services
+STATUS=/tmp/cgs2-mqtt-status.json
+LOCK=/run/cgs2-mqtt-config.lock
+
+# ok is true or false only once finished; null means still running. The UI
+# stops polling on a boolean, so in-progress must never be reported as false.
+status() {
+    jq -n --arg message "$2" --argjson ok "$1" '{ok:$ok,message:$message}' > "$STATUS.$$"
+    mv "$STATUS.$$" "$STATUS"
+}
+
+case "${1:-}" in
+    apply)
+        # Replace any previous result before the UI's first poll.
+        status null 'Applying local MQTT settings…'
+        # Return to the QML command runner before stopping the application.
+        # Ignore HUP before the fork, then detach from the USB shell's session.
+        # This also survives the calling application being restarted by worker.
+        trap '' HUP
+        setsid "$0" worker > /tmp/cgs2-mqtt-apply.log 2>&1 < /dev/null &
+        exit 0 ;;
+    worker|initialize) ;;
+    *) echo 'Usage: cgs2-mqtt-config apply|initialize' >&2; exit 2 ;;
+esac
+
+mkdir "$LOCK" 2>/dev/null || { status false 'An MQTT update is already running.'; exit 1; }
+restart=0
+policy_attempted=0
+failure='Could not validate MQTT settings. Existing permissions are preserved. Check USB debug logs.'
+cleanup() {
+    result=$?
+    set +e
+    # The stock /etc/profile references optional unset environment variables.
+    set +u
+    if [ -f "$LOCK/qt.log" ]; then
+        cp "$LOCK/qt.log" /tmp/cgs2-mqtt-helper.log
+        chmod 600 /tmp/cgs2-mqtt-helper.log
+    fi
+    if [ -f "$LOCK/controller.log" ]; then
+        cp "$LOCK/controller.log" /tmp/cgs2-mqtt-controller.log
+        chmod 600 /tmp/cgs2-mqtt-controller.log
+    fi
+    if [ "$result" != 0 ]; then
+        # The controller owns the shared lock, registry and kernel policy.
+        # Retry only MQTT revocation; time/weather/DNS permissions stay owned by
+        # their services. Never restart privacy init or disrupt USB/networking.
+        if [ "$policy_attempted" = 1 ]; then
+            if "$SERVICES" mqtt-policy disable >> "$LOCK/controller.log" 2>&1; then
+                failure='Could not apply MQTT settings; its broker permission was removed. Other service approvals are preserved. Check USB debug logs.'
+            else
+                failure='Could not apply MQTT settings or confirm MQTT revocation. Check USB debug logs.'
+            fi
+            cp "$LOCK/controller.log" /tmp/cgs2-mqtt-controller.log
+            chmod 600 /tmp/cgs2-mqtt-controller.log
+        fi
+        status false "$failure"
+    fi
+    if [ "$restart" = 1 ] && [ -f /run/cgs2-privacy.ready ]; then
+        . /etc/profile
+        export QT_QPA_FONTDIR=/usr/share/fonts QT_QPA_EGLFS_ALWAYS_SET_MODE=1 QT_QPA_EGLFS_KMS_ATOMIC=1
+        export QT_QPA_EGLFS_WIDTH=720 QT_QPA_EGLFS_HEIGHT=720 QT_QPA_EGLFS_PHYSICAL_WIDTH=720 QT_QPA_EGLFS_PHYSICAL_HEIGHT=720
+        cd /qingping/bin
+        # Native diagnostics already have their own bounded log files.
+        setsid /qingping/bin/watchdog.sh > /dev/null 2>&1 < /dev/null &
+    fi
+    rm -rf "$LOCK"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+status null 'Applying local MQTT settings…'
+
+if [ "$1" = initialize ] && pgrep -x QingSnow2App >/dev/null; then
+    failure='Stop the display before initializing settings. Existing permissions are preserved.'
+    exit 1
+fi
+
+# Validate without stopping the display or changing its native settings. Use a
+# guarded private copy so this does not depend on qmlscene argument handling.
+# The validation result also confirms that this mode really ran.
+[ "$(grep -c -x '    property bool validateOnly: false' "$BASE/MqttConfig.qml")" = 1 ]
+sed 's/^    property bool validateOnly: false$/    property bool validateOnly: true/' \
+    "$BASE/MqttConfig.qml" > "$LOCK/ValidateMqtt.qml"
+mkdir -p /run/cgs2-qt
+chmod 700 /run/cgs2-qt
+QT_QUICK_BACKEND=software QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/run/cgs2-qt \
+    timeout 20 qmlscene "$LOCK/ValidateMqtt.qml" > "$LOCK/qt.log" 2>&1
+sed -n 's/^qml: CGS2_RESULT //p' "$LOCK/qt.log" > "$LOCK/result.json"
+if ! jq -es 'length == 1 and (.[0] | .ok == true and .validationOnly == true)' "$LOCK/result.json" >/dev/null; then
+    failure='Invalid MQTT settings. Existing permissions and the display are unchanged.'
+    exit 1
+fi
+
+# The per-MQTT lock spans this transaction. The controller separately holds the
+# global services lock during each atomic update; do not nest that lock here.
+[ -x "$SERVICES" ]
+policy_attempted=1
+"$SERVICES" mqtt-policy disable > "$LOCK/controller.log" 2>&1
+
+if [ "$1" = worker ]; then
+    sleep 1
+    restart=1
+    pkill -f '^(/bin/)?sh /qingping/bin/watchdog.sh' || :
+    killall watchdog.sh 2>/dev/null || :
+    pkill -x QingSnow2App || :
+    for attempt in 1 2 3 4 5; do
+        pgrep -x QingSnow2App >/dev/null || break
+        sleep 1
+    done
+    if pgrep -x QingSnow2App >/dev/null; then
+        exit 1
+    fi
+    # The stopped display must not re-arm the timer after magic-close.
+    echo V > /dev/watchdog
+else
+    echo V > /dev/watchdog
+fi
+chmod 600 /data/etc/cgs2-mqtt.ini /data/etc/setting.ini
+QT_QUICK_BACKEND=software QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/run/cgs2-qt \
+    timeout 20 qmlscene "$BASE/MqttConfig.qml" > "$LOCK/qt.log" 2>&1
+sed -n 's/^qml: CGS2_RESULT //p' "$LOCK/qt.log" > "$LOCK/result.json"
+if ! jq -es 'length == 1 and (.[0] | .ok == true and .validationOnly == false)' "$LOCK/result.json" >/dev/null; then
+    exit 1
+fi
+if jq -e '.enabled == true' "$LOCK/result.json" >/dev/null; then
+    host=$(jq -er '.host' "$LOCK/result.json")
+    port=$(jq -er '.port | tostring' "$LOCK/result.json")
+    "$SERVICES" mqtt-policy set "$host" "$port" >> "$LOCK/controller.log" 2>&1
+fi
+chmod 600 /data/etc/cgs2-mqtt.ini /data/etc/cgs2-mqtt-applied.ini /data/etc/setting.ini
+sync
+if jq -e '.enabled == true' "$LOCK/result.json" >/dev/null; then
+    status true 'Saved. MQTT broker permission is enabled. Other service approvals are preserved.'
+else
+    status true 'Saved. MQTT is disabled. Other service approvals are preserved.'
+fi

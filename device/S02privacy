@@ -1,0 +1,52 @@
+#!/bin/sh
+# Called explicitly at the start of rcS, before Wi-Fi/network/application startup.
+# USB gadget ADB is not an IP interface and remains available in rescue mode.
+
+case "${1:-start}" in
+    start|restart|reload) ;;
+    stop) exit 0 ;; # Never clear a privacy filter as a shutdown side effect.
+    *) echo "Usage: $0 {start|restart|reload|stop}" >&2; exit 1 ;;
+esac
+
+umask 077
+mkdir -p /run
+rm -f /run/cgs2-privacy.ready
+failed=0
+
+# Disable IPv6 for existing and future interfaces before those interfaces start.
+for path in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+    [ -e "$path" ] || continue
+    echo 1 > "$path" || failed=1
+done
+for path in /proc/sys/net/ipv4/ip_forward /proc/sys/net/ipv6/conf/*/forwarding; do
+    [ -e "$path" ] || continue
+    echo 0 > "$path" || failed=1
+done
+
+if ! /usr/local/sbin/cgs2-filter apply --config /etc/cgs2-privacy/allowlist.conf; then
+    failed=1
+fi
+
+if [ "$failed" != 0 ]; then
+    # A malformed allowlist must not leave old permissions active on reload.
+    /usr/local/sbin/cgs2-filter apply 2>/dev/null || :
+    pkill -f '^(/bin/)?sh /qingping/bin/watchdog.sh' 2>/dev/null || :
+    killall watchdog.sh QingSnow2App wpa_supplicant dhcpcd miio_client ntpd 2>/dev/null || :
+    for attempt in 1 2 3 4 5; do
+        pgrep -x QingSnow2App >/dev/null || break
+        sleep 1
+    done
+    # Keep USB rescue running after stopping the application watchdog feeder.
+    if ! pgrep -x QingSnow2App >/dev/null; then echo V > /dev/watchdog || :; fi
+    # Defensive shutdown for a manual reload as well as early-boot failures.
+    for path in /sys/class/net/*; do
+        interface=${path##*/}
+        [ "$interface" = lo ] || ifconfig "$interface" down 2>/dev/null || :
+    done
+    echo 'CGS2 privacy enforcement failed; network and application startup blocked' >&2
+    exit 1
+fi
+
+: > /run/cgs2-privacy.ready || exit 1
+echo 'CGS2 privacy filter ready'
+exit 0

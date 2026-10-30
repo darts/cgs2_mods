@@ -1,0 +1,45 @@
+# Native Windows support uses built-in installers, not shell-based asdf plugins.
+# https://mise.jdx.dev/core-tools.html
+# https://mise.jdx.dev/lang/python.html#windows
+# https://mise.jdx.dev/tasks/task-arguments.html
+[tools]
+"core:python" = "3.15.0"
+"core:go" = "1.27.2"
+"core:zig" = "0.17.0"
+
+[settings]
+# Avoid needing a host C compiler just to install Python.
+python.compile = false
+
+# mise run can retain an already activated virtualenv ahead of tool paths.
+# Set task PATH explicitly, without changing the caller's shell or global config.
+# Windows distributions place python.exe/zig.exe at the install root; include
+# their bin directories too, while Go uses bin on every platform.
+# https://mise.jdx.dev/templates.html
+# https://mise.jdx.dev/tasks/templates.html
+[task_templates.pinned-tools]
+env.PATH = '{% if os() == "windows" %}{{ tools.python.path }};{{ tools.python.path }}\bin;{{ tools.go.path }}\bin;{{ tools.zig.path }};{{ tools.zig.path }}\bin;{{ env.PATH }}{% else %}{{ tools.python.path }}/bin:{{ tools.go.path }}/bin:{{ tools.zig.path }}/bin:{{ env.PATH }}{% endif %}'
+
+[tasks.setup]
+extends = "pinned-tools"
+description = "Set up project-local Google ADB; no device changes"
+run = "python qingping.py setup"
+raw = true
+
+[tasks.start]
+extends = "pinned-tools"
+description = "Open the guided CGS2 menu"
+run = "python qingping.py start"
+raw = true
+
+[tasks.build]
+extends = "pinned-tools"
+description = "Cross-build the static Linux ARM64 device helpers"
+run = "python qingping.py build"
+raw = true
+
+[tasks.test]
+extends = "pinned-tools"
+description = "Run applicable local checks; no CGS2 access"
+run = "python qingping.py test"
+raw = true
