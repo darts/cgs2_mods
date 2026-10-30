@@ -3,6 +3,8 @@
 This project lets a Qingping Air Monitor 2 (CGS2) operate without the vendor cloud.
 It keeps the display, sensors and local reading history.
 
+The code of this repository is (almost) entirely AI-generated.
+
 ## Features
 
 - **Local MQTT and Home Assistant.** Send current readings to your broker, with automatic sensor discovery in Home Assistant.
